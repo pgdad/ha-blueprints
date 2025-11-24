@@ -10,9 +10,9 @@ blueprint:
       description: The light or switch entity to monitor and control.
       selector:
         entity:
-          domain:
-            - light
-            - switch
+          filter:
+            - domain: light
+            - domain: switch
 
     max_on_duration:
       name: Maximum On Duration
