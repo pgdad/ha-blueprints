@@ -1,16 +1,18 @@
 blueprint:
-  name: Auto Turn Off Light After Duration
+  name: Auto Turn Off Light/Switch After Duration
   description: >
-    Automatically turns off a light switch if it has been on for a configurable
+    Automatically turns off a light or switch if it has been on for a configurable
     duration. Checks periodically during a specified time window (default: 10 PM to 5 AM).
   domain: automation
   input:
-    light_switch:
-      name: Light Switch
-      description: The light switch entity to monitor and control.
+    target_entity:
+      name: Light or Switch
+      description: The light or switch entity to monitor and control.
       selector:
         entity:
-          domain: light
+          domain:
+            - light
+            - switch
 
     max_on_duration:
       name: Maximum On Duration
@@ -50,19 +52,22 @@ trigger:
   - platform: time_pattern
     minutes: !input check_interval
 
+variables:
+  target: !input target_entity
+
 condition:
   - condition: time
     after: !input start_time
     before: !input end_time
   - condition: state
-    entity_id: !input light_switch
+    entity_id: !input target_entity
     state: "on"
     for:
       minutes: !input max_on_duration
 
 action:
-  - service: light.turn_off
+  - service: homeassistant.turn_off
     target:
-      entity_id: !input light_switch
+      entity_id: !input target_entity
 
 mode: single
