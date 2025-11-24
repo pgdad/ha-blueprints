@@ -1,0 +1,68 @@
+blueprint:
+  name: Auto Turn Off Light After Duration
+  description: >
+    Automatically turns off a light switch if it has been on for a configurable
+    duration. Checks periodically during a specified time window (default: 10 PM to 5 AM).
+  domain: automation
+  input:
+    light_switch:
+      name: Light Switch
+      description: The light switch entity to monitor and control.
+      selector:
+        entity:
+          domain: light
+
+    max_on_duration:
+      name: Maximum On Duration
+      description: Turn off the light if it has been on longer than this duration (in minutes).
+      default: 30
+      selector:
+        number:
+          min: 1
+          max: 480
+          unit_of_measurement: minutes
+          mode: slider
+
+    check_interval:
+      name: Check Interval
+      description: >
+        How frequently to check if the light should be turned off.
+        Use /X format for every X minutes (e.g., /10 for every 10 minutes).
+      default: "/10"
+      selector:
+        text:
+
+    start_time:
+      name: Start Time
+      description: Time when this automation becomes active.
+      default: "22:00:00"
+      selector:
+        time:
+
+    end_time:
+      name: End Time
+      description: Time when this automation stops being active.
+      default: "05:00:00"
+      selector:
+        time:
+
+trigger:
+  - platform: time_pattern
+    minutes: !input check_interval
+
+condition:
+  - condition: time
+    after: !input start_time
+    before: !input end_time
+  - condition: state
+    entity_id: !input light_switch
+    state: "on"
+    for:
+      minutes: !input max_on_duration
+
+action:
+  - service: light.turn_off
+    target:
+      entity_id: !input light_switch
+
+mode: single
