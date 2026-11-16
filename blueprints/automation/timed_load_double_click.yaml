@@ -1,0 +1,222 @@
+blueprint:
+  name: Timed Light/Switch with Double-Click Timer
+  description: >
+    Runs a light or switch (e.g. a bathroom fan) on a countdown kept in a
+    timer helper, controlled by double-clicks on a wall paddle.
+
+
+    **Paddle behaviour**
+
+    * Single press: normal on/off, no timer. Turning the load off cancels a
+      running timer.
+
+    * Double-click up: if the load is off, or on without a timer, starts the
+      timer with the timer helper's own default duration and turns the load on.
+      If the timer is running, adds the step (capped at the maximum).
+
+    * Double-click down: if the load is on and the timer running, removes the
+      step (cancels the timer and turns the load off when under 30 s would
+      remain). Otherwise does nothing.
+
+    * Timer started or restarted from anywhere (paddle, dashboard, hasp web UI)
+      turns the load on; timer finished or cancelled turns it off.
+
+
+    **Before creating an instance**, create a dedicated Timer helper per load
+    (Settings → Devices & services → Helpers → Timer). Its duration is the
+    double-click-up default; enable "Restore" so it survives HA restarts.
+    Use a separate timer for every instance.
+  domain: automation
+  homeassistant:
+    min_version: 2024.10.0
+  input:
+    load_entity:
+      name: Light or switch
+      description: The load the timer runs.
+      selector:
+        entity:
+          filter:
+            - domain: light
+            - domain: switch
+    timer_entity:
+      name: Timer helper
+      description: Dedicated timer helper holding this load's countdown.
+      selector:
+        entity:
+          filter:
+            - domain: timer
+    up_event:
+      name: Paddle up event
+      description: Event entity of the paddle's up button.
+      selector:
+        entity:
+          filter:
+            - domain: event
+    down_event:
+      name: Paddle down event
+      description: Event entity of the paddle's down button.
+      selector:
+        entity:
+          filter:
+            - domain: event
+    press_event_type:
+      name: Double-click event type
+      description: The event_type the button entities report for a double-click.
+      default: multi_press_2
+      selector:
+        text:
+    step_minutes:
+      name: Step
+      description: Minutes added or removed by a double-click.
+      default: 5
+      selector:
+        number:
+          min: 1
+          max: 60
+          unit_of_measurement: minutes
+          mode: box
+    max_minutes:
+      name: Maximum
+      description: Double-click up never extends the timer beyond this.
+      default: 120
+      selector:
+        number:
+          min: 1
+          max: 1440
+          unit_of_measurement: minutes
+          mode: box
+
+# One automation per load. Queued so that the timer events it causes itself
+# (e.g. timer.start → timer.started → turn on) run in order.
+mode: queued
+max: 10
+
+triggers:
+  - trigger: state
+    entity_id: !input up_event
+    id: up
+  - trigger: state
+    entity_id: !input down_event
+    id: down
+  - trigger: event
+    event_type: timer.started
+    event_data:
+      entity_id: !input timer_entity
+    id: timer_on
+  - trigger: event
+    event_type: timer.restarted
+    event_data:
+      entity_id: !input timer_entity
+    id: timer_on
+  - trigger: event
+    event_type: timer.finished
+    event_data:
+      entity_id: !input timer_entity
+    id: timer_off
+  - trigger: event
+    event_type: timer.cancelled
+    event_data:
+      entity_id: !input timer_entity
+    id: timer_off
+  - trigger: state
+    entity_id: !input load_entity
+    to: "off"
+    id: load_off
+
+variables:
+  load_entity: !input load_entity
+  timer_entity: !input timer_entity
+  press_type: !input press_event_type
+  step_minutes: !input step_minutes
+  max_minutes: !input max_minutes
+  step: "{{ (step_minutes | int) * 60 }}"
+  max_seconds: "{{ (max_minutes | int) * 60 }}"
+  double_click: >-
+    {{ trigger.platform == 'state'
+       and trigger.from_state is not none
+       and trigger.from_state.state != 'unavailable'
+       and trigger.to_state.state not in ['unavailable', 'unknown']
+       and trigger.to_state.attributes.event_type == press_type }}
+  # Seconds left on a running timer (0 if not active).
+  remaining: >-
+    {% set fa = state_attr(timer_entity, 'finishes_at') %}
+    {{ ((as_datetime(fa) - now()).total_seconds() | int(0))
+       if is_state(timer_entity, 'active') and fa else 0 }}
+
+actions:
+  - choose:
+      # Double-click up: extend a running timer, otherwise start the default.
+      # The timer is restarted with the new total because timer.change cannot
+      # extend past the timer's original duration.
+      - conditions:
+          - condition: trigger
+            id: up
+          - condition: template
+            value_template: "{{ double_click }}"
+        sequence:
+          - if:
+              - condition: template
+                value_template: >-
+                  {{ is_state(load_entity, 'on') and is_state(timer_entity, 'active') }}
+            then:
+              - action: timer.start
+                target:
+                  entity_id: "{{ timer_entity }}"
+                data:
+                  duration: "{{ [remaining + step, max_seconds] | min }}"
+            else:
+              - action: timer.start
+                target:
+                  entity_id: "{{ timer_entity }}"
+
+      # Double-click down: shorten a running timer while the load is on.
+      - conditions:
+          - condition: trigger
+            id: down
+          - condition: template
+            value_template: >-
+              {{ double_click and is_state(load_entity, 'on')
+                 and is_state(timer_entity, 'active') }}
+        sequence:
+          - if:
+              - condition: template
+                value_template: "{{ remaining - step < 30 }}"
+            then:
+              - action: timer.cancel
+                target:
+                  entity_id: "{{ timer_entity }}"
+            else:
+              - action: timer.start
+                target:
+                  entity_id: "{{ timer_entity }}"
+                data:
+                  duration: "{{ remaining - step }}"
+
+      # Timer started/restarted → load on.
+      - conditions:
+          - condition: trigger
+            id: timer_on
+        sequence:
+          - action: homeassistant.turn_on
+            target:
+              entity_id: "{{ load_entity }}"
+
+      # Timer finished/cancelled → load off.
+      - conditions:
+          - condition: trigger
+            id: timer_off
+        sequence:
+          - action: homeassistant.turn_off
+            target:
+              entity_id: "{{ load_entity }}"
+
+      # Load switched off some other way → cancel the timer.
+      - conditions:
+          - condition: trigger
+            id: load_off
+          - condition: template
+            value_template: "{{ not is_state(timer_entity, 'idle') }}"
+        sequence:
+          - action: timer.cancel
+            target:
+              entity_id: "{{ timer_entity }}"
