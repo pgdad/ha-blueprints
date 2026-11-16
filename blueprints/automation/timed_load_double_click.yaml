@@ -26,6 +26,12 @@ blueprint:
     (Settings → Devices & services → Helpers → Timer). Its duration is the
     double-click-up default; enable "Restore" so it survives HA restarts.
     Use a separate timer for every instance.
+
+
+    **Optional safety shut-off** (off by default): during a time window
+    (default midnight to 5 AM), turn the load off once it has been on for a
+    set time without a running timer, e.g. a fan switched on by hand and
+    forgotten. A running timer is left alone since it ends on its own.
   domain: automation
   homeassistant:
     min_version: 2024.10.0
@@ -85,6 +91,35 @@ blueprint:
           max: 1440
           unit_of_measurement: minutes
           mode: box
+    safety:
+      name: Safety shut-off
+      icon: mdi:timer-off-outline
+      collapsed: true
+      input:
+        safety_minutes:
+          name: Shut off after
+          description: >
+            Turn the load off when it has been on this long without a running
+            timer, during the window below. 0 disables the safety shut-off.
+          default: 0
+          selector:
+            number:
+              min: 0
+              max: 480
+              unit_of_measurement: minutes
+              mode: box
+        safety_start:
+          name: Window start
+          description: Safety shut-off applies from this time...
+          default: "00:00:00"
+          selector:
+            time:
+        safety_end:
+          name: Window end
+          description: ...until this time (may cross midnight).
+          default: "05:00:00"
+          selector:
+            time:
 
 # One automation per load. Queued so that the timer events it causes itself
 # (e.g. timer.start → timer.started → turn on) run in order.
@@ -122,6 +157,17 @@ triggers:
     entity_id: !input load_entity
     to: "off"
     id: load_off
+  # Safety shut-off: on long enough (checked against the window), or the
+  # window opens while the load has already been on long enough.
+  - trigger: state
+    entity_id: !input load_entity
+    to: "on"
+    for:
+      minutes: !input safety_minutes
+    id: safety
+  - trigger: time
+    at: !input safety_start
+    id: safety
 
 variables:
   load_entity: !input load_entity
@@ -129,6 +175,7 @@ variables:
   press_type: !input press_event_type
   step_minutes: !input step_minutes
   max_minutes: !input max_minutes
+  safety_minutes: !input safety_minutes
   step: "{{ (step_minutes | int) * 60 }}"
   max_seconds: "{{ (max_minutes | int) * 60 }}"
   double_click: >-
@@ -220,3 +267,24 @@ actions:
           - action: timer.cancel
             target:
               entity_id: "{{ timer_entity }}"
+
+      # Safety shut-off: inside the window, on long enough, no running timer.
+      - conditions:
+          - condition: trigger
+            id: safety
+          - condition: template
+            value_template: >-
+              {{ (safety_minutes | int(0)) > 0
+                 and not is_state(timer_entity, 'active') }}
+          - condition: time
+            after: !input safety_start
+            before: !input safety_end
+          - condition: state
+            entity_id: !input load_entity
+            state: "on"
+            for:
+              minutes: !input safety_minutes
+        sequence:
+          - action: homeassistant.turn_off
+            target:
+              entity_id: "{{ load_entity }}"
